@@ -1,0 +1,85 @@
+# 一次获取所有节点角色，并安全重启 OpenSearch（master 最后重启）
+# 变量需定义：
+# os_api_url, os_user, os_pass, os_service_name, os_group_name
+
+- name: 1 次 API 获取全集群节点角色
+  uri:
+    url: "{{ os_api_url }}/_nodes?filter_path=nodes.*.name,nodes.*.ip,nodes.*.roles"
+    method: GET
+    user: "{{ os_user | default(omit) }}"
+    password: "{{ os_pass | default(omit) }}"
+    force_basic_auth: "{{ os_user is defined }}"
+    status_code: 200
+  register: _os_all_nodes
+  run_once: true
+
+- name: 节点字典转列表
+  set_fact:
+    _os_nodes_list: "{{ _os_all_nodes.json.nodes | dict2items }}"
+  run_once: true
+
+- name: 为所有节点设置 is_master 事实
+  set_fact:
+    is_master: >-
+      {{
+        (_os_nodes_list | selectattr('value.name', '==', inventory_hostname)
+        | first).value.roles contains 'cluster_manager'
+      }}
+  delegate_to: "{{ item }}"
+  delegate_facts: true
+  loop: "{{ groups[os_group_name] }}"
+  run_once: true
+
+- name: 等待集群状态为 green
+  uri:
+    url: "{{ os_api_url }}/_cluster/health?wait_for_status=green&timeout=180s"
+    user: "{{ os_user | default(omit) }}"
+    password: "{{ os_pass | default(omit) }}"
+    force_basic_auth: "{{ os_user is defined }}"
+  register: _health
+  until: _health.json.status == 'green'
+  retries: 30
+  delay: 5
+  run_once: true
+
+# ===================== 重启非 master 节点 =====================
+- name: 逐台重启 非master 节点
+  service:
+    name: "{{ os_service_name }}"
+    state: restarted
+  when: not is_master
+  serial: 1
+
+- name: 非master 重启后等待集群 green
+  uri:
+    url: "{{ os_api_url }}/_cluster/health?wait_for_status=green&timeout=180s"
+    user: "{{ os_user | default(omit) }}"
+    password: "{{ os_pass | default(omit) }}"
+    force_basic_auth: "{{ os_user is defined }}"
+  register: _health
+  until: _health.json.status == 'green'
+  retries: 30
+  delay: 5
+  when: not is_master
+  run_once: true
+
+# ===================== 最后重启 master 节点 =====================
+- name: 逐台重启 master 节点
+  service:
+    name: "{{ os_service_name }}"
+    state: restarted
+  when: is_master
+  serial: 1
+
+- name: 最终等待集群完全 green
+  uri:
+    url: "{{ os_api_url }}/_cluster/health?wait_for_status=green&timeout=180s"
+    user: "{{ os_user | default(omit) }}"
+    password: "{{ os_pass | default(omit) }}"
+    force_basic_auth: "{{ os_user is defined }}"
+  register: _health
+  until: _health.json.status == 'green'
+  retries: 30
+  delay: 5
+  when: is_master
+  run_once: true
