@@ -1,0 +1,15 @@
+- name: convert to list
+  set_fact:
+    _node_roles_list: "{{ _node_roles.json.nodes | dict2items }}"
+  run_once: true
+
+- name: set is_master for all members
+  set_fact:
+    is_master: >-
+      {{
+        'cluster_manager' in (_node_roles_list | selectattr('value.name', '==', inventory_hostname) | first).value.roles
+      }}
+  delegate_to: "{{ item }}"
+  delegate_facts: true
+  loop: "{{ ansible_play_hosts_all }}"
+  run_once: true
