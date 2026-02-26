@@ -13,3 +13,8 @@
   delegate_facts: true
   loop: "{{ ansible_play_hosts_all }}"
   run_once: true
+
+- name: 调试节点名称匹配情况
+  debug:
+    msg: "Inventory hostname: {{ inventory_hostname }}, OpenSearch nodes: {{ _node_roles_list | map(attribute='value.name') | list }}"
+  run_once: true
