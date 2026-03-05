@@ -1,0 +1,66 @@
+---
+# tasks/main.yml - 完整的 OpenSearch NFS 快照流程
+
+- name: 确保 NFS 目录已挂载
+  mount:
+    path: /mnt/opensearch-backups
+    src: "{{ nfs_server }}:/path/to/nfs/share"
+    fstype: nfs
+    opts: "defaults"
+    state: mounted
+  become: yes
+
+- name: 生成快照名称 (基于时间戳)
+  # 生成类似 snapshot_20260305_113921 的名称
+  set_fact:
+    snapshot_name: "snapshot_{{ '%Y%m%d_%H%M%S' | strftime }}"
+
+- name: 在 OpenSearch 中注册 NFS 快照仓库
+  uri:
+    url: "http://{{ opensearch_host }}:{{ opensearch_port }}/_snapshot/my_nfs_repository"
+    method: PUT
+    body: >-
+      {
+        "type": "fs",
+        "settings": {
+          "location": "/mnt/opensearch-backups",
+          "compress": true
+        }
+      }
+    body_format: json
+    force_basic_auth: yes
+    user: "{{ opensearch_username }}"
+    password: "{{ opensearch_password }}"
+    status_code: 200
+  # 如果仓库已存在，OpenSearch 会返回 400。为了幂等性，忽略 400 错误。
+  ignore_errors: "{{ ignore_repository_exists_error | default(true) }}"
+  # 注意：Ansible 2.8+ 支持在 ignore_errors 中使用变量或布尔值
+
+- name: 触发 OpenSearch 快照
+  uri:
+    url: "http://{{ opensearch_host }}:{{ opensearch_port }}/_snapshot/my_nfs_repository/{{ snapshot_name }}?wait_for_completion=false"
+    method: PUT
+    force_basic_auth: yes
+    user: "{{ opensearch_username }}"
+    password: "{{ opensearch_password }}"
+    status_code: 200
+  register: snapshot_result
+
+- name: 等待快照完成
+  uri:
+    url: "http://{{ opensearch_host }}:{{ opensearch_port }}/_snapshot/my_nfs_repository/{{ snapshot_name }}"
+    return_content: yes
+    force_basic_auth: yes
+    user: "{{ opensearch_username }}"
+    password: "{{ opensearch_password }}"
+    status_code: 200
+  register: snapshot_status
+  until: snapshot_status.json.snapshots[0].state == "SUCCESS"
+  retries: 60
+  delay: 30
+  # 如果快照失败，该任务将失败，从而中断 playbook
+  ignore_errors: no
+
+- name: 显示最终状态
+  debug:
+    msg: "快照 [{{ snapshot_name }}] 已成功完成。"
